@@ -1,24 +1,24 @@
 ## 1. Repository scaffolding
 
-- [ ] 1.1 Initialize the project: create `README.md`, `AGENTS.md`, `.gitignore`, `pyproject.toml` (uv workspace), and a top-level directory structure with empty `memory/`, `memory-server/`, `scripts/`, `tests/` directories.
-- [ ] 1.2 Commit the scaffold to git. Tag the commit as the project foundation so the migration source path is recoverable.
-- [ ] 1.3 Add the project to `~/.config/opencode/opencode.jsonc` as a comment-documented block (not active yet) so the cutover step is mechanical.
+- [x] 1.1 Initialize the project: create `README.md`, `AGENTS.md`, `.gitignore`, `pyproject.toml` (uv workspace), and a top-level directory structure with empty `memory/`, `memory-server/`, `scripts/`, `tests/` directories.
+- [x] 1.2 Commit the scaffold to git. Tag the commit as the project foundation so the migration source path is recoverable.
+- [x] 1.3 Add the project to `~/.config/opencode/opencode.jsonc` as a comment-documented block (not active yet) so the cutover step is mechanical.
 
 ## 2. OKF bundle skeleton
 
-- [ ] 2.1 Create `memory/.obsidian/` with the minimum config Obsidian needs (vault name, file location setting). Let Obsidian regenerate the rest on first open.
-- [ ] 2.2 Create `memory/README.md` describing the bundle, the OKF conformance rule, and the read-scope rule (only `memory/` is readable by agents by default).
-- [ ] 2.3 Create `memory/index.md` as the OKF root index. Use the `Index` type. Include links to each project subdirectory.
-- [ ] 2.4 Create `memory/log.md` as the OKF chronological change log with a one-line stub entry dated to the project start.
-- [ ] 2.5 Create `memory/templates/decision.md`, `memory/templates/fact.md`, `memory/templates/learning.md`, `memory/templates/convention.md`, and `memory/templates/profile.md` with OKF-conformant frontmatter pre-filled (including a default `description: "<fill me>"` placeholder).
-- [ ] 2.6 Create `memory/tag-vocabulary.json` by copying the vocabulary from `~/SecondBrain/memory/tag-vocabulary.json`.
+- [x] 2.1 Create `memory/.obsidian/` with the minimum config Obsidian needs (vault name, file location setting). Let Obsidian regenerate the rest on first open.
+- [x] 2.2 Create `memory/README.md` describing the bundle, the OKF conformance rule, and the read-scope rule (only `memory/` is readable by agents by default).
+- [x] 2.3 Create `memory/index.md` as the OKF root index. Use the `Index` type. Include links to each project subdirectory.
+- [x] 2.4 Create `memory/log.md` as the OKF chronological change log with a one-line stub entry dated to the project start.
+- [x] 2.5 Create `memory/templates/decision.md`, `memory/templates/fact.md`, `memory/templates/learning.md`, `memory/templates/convention.md`, and `memory/templates/profile.md` with OKF-conformant frontmatter pre-filled (including a default `description: "<fill me>"` placeholder).
+- [x] 2.6 Create `memory/tag-vocabulary.json` by copying the vocabulary from `~/SecondBrain/memory/tag-vocabulary.json`.
 
 ## 3. OKF validator script
 
-- [ ] 3.1 Implement `scripts/okf_validate.py` as a CLI that walks `memory/`, parses every `.md` file's frontmatter (use `python-frontmatter` or `pyyaml`), and reports conformance against the `okf-bundle` spec.
-- [ ] 3.2 Add the `--strict` flag (exits non-zero on any error) and a default mode that prints a per-directory summary.
-- [ ] 3.3 Add a unit test file `tests/test_okf_validate.py` covering: clean bundle passes, missing `description` is flagged, unknown `type` is flagged unless prefixed `x-`, custom fields are preserved.
-- [ ] 3.4 Run the validator against the empty bundle skeleton and confirm exit 0.
+- [x] 3.1 Implement `scripts/okf_validate.py` as a CLI that walks `memory/`, parses every `.md` file's frontmatter (use `python-frontmatter` or `pyyaml`), and reports conformance against the `okf-bundle` spec.
+- [x] 3.2 Add the `--strict` flag (exits non-zero on any error) and a default mode that prints a per-directory summary.
+- [x] 3.3 Add a unit test file `tests/test_okf_validate.py` covering: clean bundle passes, missing `description` is flagged, unknown `type` is flagged unless prefixed `x-`, custom fields are preserved.
+- [x] 3.4 Run the validator against the empty bundle skeleton and confirm exit 0.
 
 ## 4. Memory store port
 
