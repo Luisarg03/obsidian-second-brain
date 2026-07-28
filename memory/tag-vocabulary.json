@@ -1,0 +1,145 @@
+{
+  "canonical": {
+    "architecture": {
+      "aliases": [
+        "arch",
+        "design",
+        "system-design"
+      ]
+    },
+    "python": {
+      "aliases": [
+        "py",
+        "python3"
+      ]
+    },
+    "typescript": {
+      "aliases": [
+        "ts",
+        "typescript"
+      ]
+    },
+    "testing": {
+      "aliases": [
+        "test",
+        "tests",
+        "testing"
+      ]
+    },
+    "ci-cd": {
+      "aliases": [
+        "ci",
+        "cd",
+        "github-actions",
+        "actions"
+      ]
+    },
+    "docker": {
+      "aliases": [
+        "docker",
+        "container"
+      ]
+    },
+    "database": {
+      "aliases": [
+        "db",
+        "sqlite",
+        "sql"
+      ]
+    },
+    "cli": {
+      "aliases": [
+        "command-line",
+        "terminal"
+      ]
+    },
+    "performance": {
+      "aliases": [
+        "perf",
+        "optimization"
+      ]
+    },
+    "security": {
+      "aliases": [
+        "security",
+        "auth"
+      ]
+    },
+    "ui-ux": {
+      "aliases": [
+        "ui",
+        "ux",
+        "frontend",
+        "interface"
+      ]
+    },
+    "refactoring": {
+      "aliases": [
+        "refactor",
+        "cleanup"
+      ]
+    },
+    "llm": {
+      "aliases": [
+        "ai",
+        "openrouter",
+        "model"
+      ]
+    },
+    "documentation": {
+      "aliases": [
+        "docs",
+        "readme"
+      ]
+    },
+    "automation": {
+      "aliases": [
+        "auto",
+        "script",
+        "makefile"
+      ]
+    },
+    "travel": {
+      "aliases": [
+        "japan",
+        "trip"
+      ]
+    },
+    "cv": {
+      "aliases": [
+        "curriculum",
+        "resume"
+      ]
+    },
+    "debugging": {
+      "aliases": [
+        "debug",
+        "fix",
+        "bug"
+      ]
+    },
+    "env-config": {
+      "aliases": [
+        "env",
+        "config",
+        "secrets",
+        "environment"
+      ]
+    },
+    "migration": {
+      "aliases": [
+        "migrate",
+        "data-migration"
+      ]
+    },
+    "decision": {
+      "aliases": []
+    },
+    "fact": {
+      "aliases": []
+    },
+    "rate-limit": {
+      "aliases": []
+    }
+  }
+}
