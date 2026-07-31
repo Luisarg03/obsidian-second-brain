@@ -22,6 +22,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Install Python dev dependencies
+        run: uv sync --extra dev
+
       - name: Run Python tests
         run: uv run pytest
 
