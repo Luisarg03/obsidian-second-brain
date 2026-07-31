@@ -1,33 +1,114 @@
-# ObsidianSecondBrain
+# Obsidian Second Brain
 
-OKF v0.1 knowledge bundle living in an Obsidian vault, consumed by LLM agents on demand.
+**AI-powered memory system for developers.**
 
-The `memory/` directory is the bundle. It is also an Obsidian vault. Open it in Obsidian to browse, search, and graph the brain. Everything else in this repo is implementation that agents do not read unless explicitly directed.
+Obsidian Second Brain captures, stores, and retrieves knowledge across coding
+sessions. It works as a persistent second brain that remembers decisions,
+facts, learnings, and conventions across projects — so you never re-derive what
+you already figured out.
 
-## Layout
+- **Opt-in reads.** Memory is pulled into context only when you ask (`/brain
+  search`). No automatic context injection, no token waste.
+- **Mostly-auto writes.** Post-session digests, checkpoint prompts, and
+  commit-anchored captures run without prompting.
+- **Human-friendly vault.** The knowledge store is an Obsidian-compatible
+  Markdown vault (OKF format) — browse, search, and graph it like any notes
+  database.
+
+## How it works
 
 ```
-memory/              OKF knowledge bundle (Obsidian vault)
-  .obsidian/         Obsidian config (regenerated on first open)
-  README.md          Bundle overview
-  index.md           OKF root index
-  log.md             Chronological change log
-  tag-vocabulary.json Controlled tag vocabulary
-  templates/         Obsidian templates with OKF frontmatter
-  projects/<project> Per-project bundles
-
-memory-server/       Python MCP server (8 tools, opt-in reads)
-scripts/             OKF validator, migrator, index rebuilder, digest
-openspec/            Capability specs and change tracking
-tests/               Pytest suite
+                          OpenCode
+   ┌───────────────────────────────────────────────┐
+   │  .opencode/plugins/memory/                    │
+   │  Plugin API v2: hooks, /brain, /checkpoint,   │
+   │  digest pipeline                              │
+   │                      │ MCP calls              │
+   │                      ▼                        │
+   │  memory_server/                               │
+   │  Python MCP server (SQLite + FTS5 index)      │
+   └──────────────────────┬────────────────────────┘
+                          │ read / write
+                          ▼
+              ┌───────────────────────────┐
+              │  memory/                  │
+              │  OKF knowledge vault      │
+              │  (Obsidian-compatible)    │
+              └───────────▲───────────────┘
+                          │
+              ┌───────────┴───────────────┐
+              │  scripts/                 │
+              │  digest · validate ·      │
+              │  rebuild · cleanup        │
+              └───────────────────────────┘
 ```
 
-## Quick start
+Markdown is the source of truth; SQLite is a derived full-text search index
+that can always be rebuilt from the bundle.
+
+## Architecture
+
+| Component | Role |
+|---|---|
+| `memory_server/` | Python MCP server. Stores and retrieves OKF entries via SQLite (WAL + FTS5). Exposes `search_memory`, `store_decision`, `store_fact`, `store_learning`, `store_convention`, `store_profile`, `export_memories`, `get_profile`, `ping`. |
+| `.opencode/plugins/memory/` | OpenCode Plugin API v2 plugin. Wires lifecycle hooks (`session.end`, `session.idle`, compaction, commit detection), the `/brain` and `/checkpoint` slash commands, and the post-session digest pipeline. |
+| `memory/` | The knowledge bundle: an Obsidian-compatible vault in OKF format, organized per project (`decisions/`, `facts/`, `learnings/`, `conventions/`, `profiles/`). |
+| `scripts/` | CLI tooling: session digest, OKF validation, SQLite index rebuild, duplicate cleanup, legacy migration. |
+
+## Requirements
+
+- Python 3.14+
+- [uv](https://docs.astral.sh/uv/)
+- OpenCode 1.17.10+ (Plugin API v2)
+
+## Setup
+
+1. Install dependencies:
+
+   ```bash
+   uv sync
+   ```
+
+2. Register the MCP server in your OpenCode configuration (e.g.
+   `opencode.json`), pointing at this repository:
+
+   ```jsonc
+   {
+     "mcp": {
+       "memory": {
+         "command": [
+           "uv", "run", "--directory", "/path/to/obsidian-second-brain",
+           "python", "memory_server/server.py"
+         ],
+         "enabled": true
+       }
+     }
+   }
+   ```
+
+   The server resolves the memory bundle path from the `MEMORY_PATH`
+   environment variable, defaulting to `<repo>/memory`.
+
+3. Load the plugin. The implementation lives in `.opencode/plugins/memory/`.
+   Link or copy it into your OpenCode plugin directory (or reference it in
+   your plugin config), keeping the repo copy as the single source of truth.
+
+## Usage
+
+- **`/brain search "<query>"`** — pull matching memories into the session
+  context. Reads are always opt-in.
+- **`/checkpoint`** — manually trigger an end-of-session review; the agent
+  writes OKF entries for anything notable.
+- **Session digest** — when a session ends, the digest pipeline automatically
+  extracts decisions, facts, and learnings from the transcript into the bundle.
+- **Obsidian** — open `memory/` as a vault in Obsidian to browse, search, and
+  graph the brain interactively.
+
+## Development
 
 ```bash
-uv sync
-uv run okf-validate                       # check OKF conformance
-uv run okf-validate --strict              # exit non-zero on any error
+uv run pytest                # test suite
+uv run okf-validate          # OKF conformance check
+uv run okf-validate --strict # fail on any error
+uv run rebuild-index         # rebuild SQLite index from Markdown
 ```
-
-See `openspec/specs/` for the full capability catalog and `openspec/changes/obsidian-second-brain-foundations/` for the in-flight foundation change.

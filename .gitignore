@@ -22,6 +22,14 @@ memory/.obsidian/workspace
 memory/.obsidian/plugins/*/data.json
 memory/.obsidian/backup
 
+# Memory data (sensitive, personal)
+memory/projects/
+memory/memory.db
+memory/tool-calls.log
+
+# OpenCode local config
+.opencode/opencode.json
+
 # Build / dist
 build/
 dist/
@@ -41,3 +49,6 @@ Thumbs.db
 # Local env overrides
 .env
 .env.local
+
+# Decision records (sensitive: personal home paths and workflow references)
+decisions/
