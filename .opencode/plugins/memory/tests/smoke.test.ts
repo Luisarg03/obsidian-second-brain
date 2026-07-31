@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isSupportedVersion, isGitCommit } from "../index.ts";
+import { isSupportedVersion, isGitCommit } from "../index";
 
 test("isSupportedVersion gates on minimum opencode version", () => {
   assert.equal(isSupportedVersion("1.18.0"), true);
