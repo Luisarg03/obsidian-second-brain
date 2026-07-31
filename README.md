@@ -112,3 +112,5 @@ uv run okf-validate          # OKF conformance check
 uv run okf-validate --strict # fail on any error
 uv run rebuild-index         # rebuild SQLite index from Markdown
 ```
+
+<!-- ci-verification: integration test marker -->
