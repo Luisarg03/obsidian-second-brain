@@ -1,6 +1,6 @@
 {
   "name": "obsidian-second-brain-plugin",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OpenCode Plugin API v2 plugin for the ObsidianSecondBraind project: opt-in reads, auto writes.",
   "main": "register.ts",
   "type": "module",
