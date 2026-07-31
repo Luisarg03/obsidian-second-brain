@@ -1,6 +1,19 @@
 # Changelog
 
-## 2026-07-28 — Foundation change (`obsidian-second-brain-foundations`)
+## [0.2.0] - 2026-07-31
+
+### Features
+- add CI workflow and release management scripts (2dc96b2)
+
+### Bug Fixes
+- un-ignore plugin package manifests for CI (7a415f3)
+- install dev dependencies in CI workflow (655fc2b)
+
+### Tests
+- verify CI pipeline (v2 - dev deps fix) (#2) (4a62637)
+
+
+## [0.1.0] - 2026-07-28 — Foundation change (`obsidian-second-brain-foundations`)
 
 Initial scaffold of the new project. Establishes the OKF v0.1 knowledge bundle, the
 opt-in read / mostly-auto write contract, and the lifecycle hook catalog.

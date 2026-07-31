@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - master
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python with uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dev dependencies
+        run: uv sync --extra dev
+
+      - name: Run Python tests
+        run: uv run pytest
+
+      - name: Install TypeScript deps
+        working-directory: .opencode/plugins/memory
+        run: npm ci
+
+      - name: Run TypeScript typecheck
+        working-directory: .opencode/plugins/memory
+        run: npm run typecheck
+
+      - name: Run TypeScript tests
+        working-directory: .opencode/plugins/memory
+        run: npm test
+
+      - name: Run OKF validation
+        run: uv run okf-validate --strict
