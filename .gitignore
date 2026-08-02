@@ -21,11 +21,16 @@ htmlcov/
 memory/.obsidian/workspace
 memory/.obsidian/plugins/*/data.json
 memory/.obsidian/backup
+memory/.obsidian/workspace.json
+memory/.obsidian/core-plugins.json
 
 # Memory data (sensitive, personal)
 memory/projects/
 memory/memory.db
+memory/memory.db-shm
+memory/memory.db-wal
 memory/tool-calls.log
+memory/logs/
 
 # OpenCode local config
 .opencode/opencode.json

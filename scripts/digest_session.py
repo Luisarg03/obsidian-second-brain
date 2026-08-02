@@ -25,16 +25,22 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import StringIO
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, TextIO
 
 from memory_server.store import MemoryStore, _first_non_heading_line
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Non-POSIX: the digest lock becomes a no-op
+
 log = logging.getLogger("digest_session")
 
-# Retry policy: max attempts and base delays per attempt index (2s, 4s, 8s).
+# Retry policy: max attempts and base delays per attempt index (5s, 10s, 20s).
 RETRY_MAX_ATTEMPTS = 3
-RETRY_BASE_DELAYS_S = (2.0, 4.0, 8.0)
+RETRY_BASE_DELAYS_S = (5.0, 10.0, 20.0)
 RETRYABLE_HTTP = (429, 500, 502, 503, 504)
 
 # JSON schema for the LLM response. Validated before any upsert.
@@ -91,33 +97,82 @@ Return only the JSON array. No prose, no markdown fences.
 # ── JSON repair ───────────────────────────────────────────────────────────
 
 
+def _convert_single_quotes(text: str) -> str:
+    """Convert single-quoted strings to double-quoted strings.
+
+    State-machine scanner: toggles in/out of a string on ``'`` outside a
+    string, emits ``"`` for delimiters, and treats ``\\'`` inside a string as
+    an escaped quote (emitted as a plain ``'``, since JSON does not need to
+    escape it). Newlines inside strings are preserved; other escape sequences
+    are copied verbatim.
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_string and ch == "\\":
+            if i + 1 < n and text[i + 1] == "'":
+                out.append("'")
+                i += 2
+            else:
+                out.append(ch)
+                if i + 1 < n:
+                    out.append(text[i + 1])
+                    i += 2
+                else:
+                    i += 1
+            continue
+        if ch == "'":
+            in_string = not in_string
+            out.append('"')
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def repair_json(text: str) -> str:
     """Best-effort repair of common LLM JSON output issues.
 
-    - Strips leading/trailing whitespace and ```json fences.
-    - Replaces single-quoted strings with double-quoted strings inside arrays
-      and values (heuristic: when the text uses single quotes but no double
-      quotes, do a full conversion).
-    - Removes trailing commas before `]` or `}`.
+    Tries progressively more aggressive repairs and returns the first string
+    that ``json.loads()`` accepts:
+
+    1. Raw text, unchanged (after stripping surrounding whitespace).
+    2. Code fences (`````json```` / ````` `````) stripped.
+    3. Trailing commas before ``]`` or ``}`` removed.
+    4. Single-quoted strings converted to double-quoted strings — only when
+       the document contains no double quotes at all. Single quotes inside a
+       double-quoted document are string content and are never altered.
+
+    If no repair parses, returns the last transformed string.
     """
     s = text.strip()
+    candidates = [s]
+
     # Strip code fences
-    s = re.sub(r"^```(?:json)?\s*", "", s)
-    s = re.sub(r"\s*```$", "", s)
-    s = s.strip()
+    fenced = re.sub(r"^```(?:json)?\s*", "", s)
+    fenced = re.sub(r"\s*```$", "", fenced).strip()
+    candidates.append(fenced)
 
     # Trailing commas: `,]` or `,}` -> `]` / `}`
-    s = re.sub(r",(\s*[\]}])", r"\1", s)
+    no_trailing = re.sub(r",(\s*[\]}])", r"\1", fenced)
+    candidates.append(no_trailing)
 
-    # Single-quote to double-quote conversion: only if no double quotes are
-    # used as the string delimiter. (LLMs often emit `{'key': 'val'}`.)
-    if "'" in s and '"' not in s:
-        s = s.replace("'", '"')
-    elif "'" in s:
-        # Mixed usage: replace ' around alphanumerics only.
-        s = re.sub(r"'([^'\n]+?)'", r'"\1"', s)
+    # Single-quote to double-quote conversion: only when no double quotes are
+    # present anywhere (otherwise single quotes are string content).
+    if "'" in no_trailing and '"' not in no_trailing:
+        candidates.append(_convert_single_quotes(no_trailing))
 
-    return s
+    for candidate in candidates:
+        try:
+            json.loads(candidate)
+            return candidate
+        except json.JSONDecodeError:
+            continue
+    return candidates[-1]
 
 
 # ── JSON validation ───────────────────────────────────────────────────────
@@ -182,7 +237,7 @@ class HTTPLLMClient:
         base_url: str = "http://localhost:11434/v1",
         model: str = "qwen3:8b",
         api_key: str = "",
-        timeout: float = 60.0,
+        timeout: float = 180.0,
         rng: random.Random | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ):
@@ -406,6 +461,11 @@ def extract_entries(
         return DigestResult(0, 0, [], raw)
 
     # Validate against schema
+    # Accept a single object instead of an array: wrap it before validation.
+    if isinstance(payload, dict) and payload.get("entry_type") in (
+        "decision", "fact", "learning",
+    ):
+        payload = [payload]
     entries = validate_entries(payload)
     if entries is None:
         log.error("LLM response did not match schema; raw=%s", raw)
@@ -475,6 +535,61 @@ def extract_entries(
     )
 
 
+# ── Digest lock (serialization) ─────────────────────────────────────────
+
+
+def acquire_digest_lock(
+    lock_path: Path, budget_seconds: float
+) -> TextIO | None:
+    """Acquire an exclusive advisory flock on ``lock_path``.
+
+    Polls at most once per second until ``budget_seconds`` elapses. Returns
+    the open file handle (kept open while the lock is held), or None if the
+    budget expired. No-op on platforms without ``fcntl`` (returns a dummy
+    handle so callers can always release).
+    """
+    if fcntl is None:
+        log.info("digest lock disabled: fcntl unavailable (non-POSIX)")
+        return StringIO()
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+")  # O_CREAT; stays open while held
+    deadline = time.monotonic() + budget_seconds
+    waiting = False
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            if time.monotonic() >= deadline:
+                handle.close()
+                log.warning(
+                    "digest lock wait expired after %.0fs; skipping "
+                    "(zero writes)",
+                    budget_seconds,
+                )
+                return None
+            if not waiting:
+                log.info(
+                    "digest lock busy, waiting up to %.0fs: %s",
+                    budget_seconds,
+                    lock_path,
+                )
+                waiting = True
+            time.sleep(min(1.0, deadline - time.monotonic()))
+    log.info("digest lock acquired: %s", lock_path)
+    return handle
+
+
+def release_digest_lock(handle: TextIO | None) -> None:
+    """Release the digest lock; closing the handle drops the flock."""
+    if handle is None:
+        return
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────
 
 
@@ -492,6 +607,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=os.environ.get("LLM_MODEL", "qwen3:8b"))
     parser.add_argument("--base-url", default=os.environ.get("LLM_BASE_URL", "http://localhost:11434/v1"))
     parser.add_argument("--api-key", default=os.environ.get("LLM_API_KEY", ""))
+    parser.add_argument("--timeout", type=int, default=180,
+                        help="Per-request LLM timeout in seconds")
+    default_lock_timeout = int(os.environ.get("DIGEST_LOCK_TIMEOUT", "600"))
+    parser.add_argument("--lock-timeout", type=int,
+                        default=default_lock_timeout,
+                        help="Max seconds to wait for the digest lock "
+                             "(env: DIGEST_LOCK_TIMEOUT)")
     parser.add_argument("--log", default="WARNING", help="Logging level (DEBUG, INFO, WARNING, ERROR)")
     args = parser.parse_args(argv)
 
@@ -514,6 +636,16 @@ def main(argv: list[str] | None = None) -> int:
         log.error("memory path is not a directory: %s", memory_path)
         return 2
 
+    # Persistent digest log: every run leaves a trace next to the bundle.
+    log_dir = memory_path / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(log_dir / "digest.log", encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    logging.getLogger().addHandler(file_handler)
+
     store = MemoryStore(storage_path=memory_path)
     store.initialize()
 
@@ -528,18 +660,30 @@ def main(argv: list[str] | None = None) -> int:
         base_url=args.base_url,
         model=args.model,
         api_key=args.api_key,
+        timeout=args.timeout,
     )
 
-    transcript = args.transcript.read_text(encoding="utf-8", errors="replace")
-    result = extract_entries(
-        transcript=transcript,
-        project=args.project,
-        llm=llm,
-        store=store,
-        tag_vocab=tag_vocab,
-        project_aliases=project_aliases,
+    # Serialize digest runs: at most one LLM call chain per memory store.
+    lock_handle = acquire_digest_lock(
+        log_dir / "digest.lock", budget_seconds=float(args.lock_timeout)
     )
-    log.info("digest result: %s", result)
+    if lock_handle is None:
+        # Lock wait expired; skip with zero writes and exit 0 per spec.
+        return 0
+
+    try:
+        transcript = args.transcript.read_text(encoding="utf-8", errors="replace")
+        result = extract_entries(
+            transcript=transcript,
+            project=args.project,
+            llm=llm,
+            store=store,
+            tag_vocab=tag_vocab,
+            project_aliases=project_aliases,
+        )
+        log.info("digest result: %s", result)
+    finally:
+        release_digest_lock(lock_handle)
     # Always exit 0 per spec: failures are logged, not raised.
     return 0
 

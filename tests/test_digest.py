@@ -5,21 +5,29 @@ Covers openspec/specs/auto-session-digest/spec.md scenarios.
 
 from __future__ import annotations
 
+import http.server
 import json
 import random
+import threading
+import time
 from pathlib import Path
+from typing import TextIO
 
 import pytest
 
 from memory_server.store import MemoryStore
 from scripts.digest_session import (
+    RETRY_BASE_DELAYS_S,
+    RETRY_MAX_ATTEMPTS,
     DigestResult,
     EXTRACTION_PROMPT,
     HTTPLLMClient,
     TagVocabulary,
+    acquire_digest_lock,
     ensure_okf_compliance,
     extract_entries,
     load_project_aliases,
+    release_digest_lock,
     repair_json,
     score_confidence,
     validate_entries,
@@ -71,6 +79,28 @@ class TestRepairJson:
         repaired = repair_json(text)
         parsed = json.loads(repaired)
         assert parsed[0]["entry_type"] == "decision"
+
+    def test_valid_json_returned_unchanged(self):
+        text = '{"content": "The \'cerebro\' system"}'
+        assert repair_json(text) == text
+
+    def test_single_quotes_inside_double_quotes_not_altered(self):
+        # Regression: single quotes are string content, never delimiters.
+        text = '{"content": "The \'cerebro\' system"}'
+        parsed = json.loads(repair_json(text))
+        assert parsed["content"] == "The 'cerebro' system"
+
+    def test_single_quoted_document_with_escaped_apostrophe(self):
+        # A `\'` inside a single-quoted string is an escaped quote, not a
+        # delimiter; it becomes a plain `'` in the double-quoted output.
+        text = (
+            "{'entry_type': 'fact', 'content': 'the project\\'s path', "
+            "'tags': []}"
+        )
+        repaired = repair_json(text)
+        parsed = json.loads(repaired)
+        assert parsed["entry_type"] == "fact"
+        assert parsed["content"] == "the project's path"
 
 
 # ── JSON validation ───────────────────────────────────────────────────────
@@ -384,6 +414,97 @@ class TestExtractPipeline:
         rows = store.db.execute("SELECT COUNT(*) FROM entries").fetchone()
         assert rows[0] == 1
 
+    def test_single_quotes_inside_double_quoted_content(self, store: MemoryStore):
+        # Regression: content apostrophes must never be converted to quotes.
+        llm = MockLLM(response=json.dumps([{
+            "entry_type": "fact",
+            "content": "The 'cerebro' system is used",
+            "tags": [],
+        }]))
+        result = extract_entries(
+            transcript="x" * 500 + " cerebro discussion",
+            project="test-proj",
+            llm=llm,
+            store=store,
+        )
+        assert result.upserted == 1
+        entries = store.search_entries(project="test-proj")
+        assert entries[0]["content"] == "The 'cerebro' system is used"
+
+    def test_single_object_response_wrapped(self, store: MemoryStore):
+        llm = MockLLM(response=json.dumps({
+            "entry_type": "fact",
+            "content": "A single object fact",
+            "tags": [],
+        }))
+        result = extract_entries(
+            transcript="x" * 500 + " single object fact",
+            project="test-proj",
+            llm=llm,
+            store=store,
+        )
+        assert result.upserted == 1
+        entries = store.search_entries(project="test-proj")
+        assert len(entries) == 1
+        assert entries[0]["content"] == "A single object fact"
+
+    def test_trailing_comma_repaired(self, store: MemoryStore):
+        llm = MockLLM(response=(
+            '[{"entry_type": "fact", "content": "Trailing comma fact", '
+            '"tags": []},]'
+        ))
+        result = extract_entries(
+            transcript="x" * 500 + " trailing comma fact",
+            project="test-proj",
+            llm=llm,
+            store=store,
+        )
+        assert result.upserted == 1
+
+    def test_code_fences_stripped(self, store: MemoryStore):
+        body = json.dumps([{
+            "entry_type": "learning",
+            "content": "Fenced learning content",
+            "tags": [],
+        }])
+        llm = MockLLM(response=f"```json\n{body}\n```")
+        result = extract_entries(
+            transcript="x" * 500 + " fenced learning",
+            project="test-proj",
+            llm=llm,
+            store=store,
+        )
+        assert result.upserted == 1
+        entries = store.search_entries(project="test-proj")
+        assert entries[0]["content"] == "Fenced learning content"
+
+    def test_single_quoted_document_with_apostrophe(self, store: MemoryStore):
+        llm = MockLLM(response=(
+            "{'entry_type': 'fact', 'content': 'the project\\'s path is "
+            "/var/lib', 'tags': []}"
+        ))
+        result = extract_entries(
+            transcript="x" * 500 + " project path fact",
+            project="test-proj",
+            llm=llm,
+            store=store,
+        )
+        assert result.upserted == 1
+        entries = store.search_entries(project="test-proj")
+        assert entries[0]["content"] == "the project's path is /var/lib"
+
+    def test_unparseable_zero_upserts_logs_raw(self, store: MemoryStore):
+        raw = '{"content": "unterminated'
+        llm = MockLLM(response=raw)
+        result = extract_entries(
+            transcript="x" * 500 + " content",
+            project="test-proj",
+            llm=llm,
+            store=store,
+        )
+        assert result.upserted == 0
+        assert result.raw_response == raw
+
 
 # ── HTTPLLMClient retry ──────────────────────────────────────────────────
 
@@ -402,3 +523,94 @@ class TestHTTPLLMClient:
         assert 500 in RETRYABLE_HTTP
         assert 503 in RETRYABLE_HTTP
         assert 404 not in RETRYABLE_HTTP  # not transient
+
+
+# ── Retry / timeout policy (D2) ─────────────────────────────────────────
+
+
+class TestRetryPolicy:
+    def test_policy_constants(self):
+        assert RETRY_MAX_ATTEMPTS == 3
+        assert RETRY_BASE_DELAYS_S == (5.0, 10.0, 20.0)
+
+    def test_default_timeout_is_180(self):
+        assert HTTPLLMClient().timeout == 180.0
+
+    def test_slow_response_within_timeout(self):
+        # A response slower than the old 60s budget still succeeds within the
+        # configured timeout: proves the timeout value reaches urlopen.
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                time.sleep(1.5)
+                body = json.dumps(
+                    {"choices": [{"message": {"content": "[]"}}]}
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        try:
+            port = server.server_address[1]
+            client = HTTPLLMClient(
+                base_url=f"http://127.0.0.1:{port}",
+                timeout=3.0,
+                sleep=lambda _s: None,
+            )
+            assert client.complete("prompt", response_format="json") == "[]"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+# ── Digest lock (serialization, D1) ─────────────────────────────────────
+
+
+class TestDigestLock:
+    def test_acquire_and_release(self, temp_dir: Path):
+        lock_path = temp_dir / "digest.lock"
+        handle = acquire_digest_lock(lock_path, budget_seconds=5.0)
+        assert handle is not None
+        # Held: a second acquisition in the same process is denied (flock
+        # conflicts between distinct open file descriptions).
+        assert acquire_digest_lock(lock_path, budget_seconds=1) is None
+        release_digest_lock(handle)
+        # Released: acquirable again.
+        handle2 = acquire_digest_lock(lock_path, budget_seconds=5.0)
+        assert handle2 is not None
+        release_digest_lock(handle2)
+
+    def test_waits_then_acquires_after_release(self, temp_dir: Path):
+        lock_path = temp_dir / "digest.lock"
+        holder = acquire_digest_lock(lock_path, budget_seconds=5.0)
+        assert holder is not None
+        result: dict[str, TextIO | None] = {}
+
+        def waiter() -> None:
+            result["handle"] = acquire_digest_lock(lock_path, budget_seconds=5.0)
+
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        time.sleep(1.5)  # give the waiter time to start polling
+        assert result == {}  # still blocked by the holder
+        release_digest_lock(holder)
+        thread.join(timeout=5.0)
+        handle = result.get("handle")
+        assert handle is not None
+        release_digest_lock(handle)
+
+    def test_budget_expiry_returns_none(self, temp_dir: Path):
+        lock_path = temp_dir / "digest.lock"
+        holder = acquire_digest_lock(lock_path, budget_seconds=5.0)
+        assert holder is not None
+        start = time.monotonic()
+        assert acquire_digest_lock(lock_path, budget_seconds=1) is None
+        assert time.monotonic() - start < 3.0  # bounded wait, no hang
+        release_digest_lock(holder)

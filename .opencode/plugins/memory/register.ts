@@ -12,8 +12,8 @@
  * Implements openspec/specs/memory-triggers/spec.md and
  * openspec/specs/opencode-plugin/spec.md:
  *   - session.created: project name resolution only (no memory auto-injection)
- *   - session.idle: checkpoint reminder via tui prompt (skip if no activity or
- *     already delivered)
+ *   - session.idle: automatic capture via the digest pipeline (skip if no
+ *     activity or already delivered; never injects into the composer)
  *   - tool.execute.after: detect `git commit*` and queue a checkpoint
  *   - experimental.chat.messages.transform: deliver queued checkpoints and the
  *     explicit prompt triggers (`/brain`, `/checkpoint`, `recuerdo que ...`)
@@ -24,9 +24,10 @@
  */
 
 import { spawn } from "node:child_process";
+import { closeSync, mkdirSync, openSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   createSessionState,
@@ -44,8 +45,10 @@ const PLUGIN_NAME = "obsidian-second-brain";
 const MIN_OPENCODE_VERSION = "1.17.10";
 const REPO_ROOT = "/home/hiro03/Private/Projects/ObsidianSecondBraind";
 const DIGEST_SCRIPT = join(REPO_ROOT, "scripts", "digest_session.py");
+const DIGEST_LOG = join(REPO_ROOT, "memory", "logs", "digest-spawn.log");
 const ACTIVITY_MAX_LINES = 20;
 const ACTIVITY_MAX_CHARS = 80;
+const MIN_DIGEST_TRANSCRIPT_CHARS = 200;
 const MCP_UNREACHABLE = "> ⚠️ Memory server unreachable — search cannot be completed.";
 const NO_ACTIVITY_REPLY =
   "No tracked activity in this session. Nothing to checkpoint.";
@@ -187,40 +190,88 @@ export default async function registerPlugin(input: {
       .join("\n\n");
 
   const spawnDigest = (transcriptPath: string, project: string) => {
-    spawn(
-      "uv",
-      [
-        "run",
-        "--directory",
-        REPO_ROOT,
-        "python",
-        DIGEST_SCRIPT,
-        "--transcript",
-        transcriptPath,
-        "--project",
-        project,
-      ],
-      { cwd: REPO_ROOT, detached: true, stdio: "ignore" },
-    ).unref();
+    let fd: number;
+    try {
+      mkdirSync(dirname(DIGEST_LOG), { recursive: true });
+      fd = openSync(DIGEST_LOG, "a");
+    } catch (err) {
+      console.warn(
+        `[${PLUGIN_NAME}] cannot open digest log ${DIGEST_LOG}:`,
+        err instanceof Error ? err.message : err,
+      );
+      return;
+    }
+    try {
+      const child = spawn(
+        "uv",
+        [
+          "run",
+          "--directory",
+          REPO_ROOT,
+          "python",
+          DIGEST_SCRIPT,
+          "--transcript",
+          transcriptPath,
+          "--project",
+          project,
+        ],
+        { cwd: REPO_ROOT, detached: true, stdio: ["ignore", fd, fd] },
+      );
+      child.on("error", (err) => {
+        console.warn(`[${PLUGIN_NAME}] digest spawn error:`, err.message);
+      });
+      child.unref();
+    } catch (err) {
+      console.warn(
+        `[${PLUGIN_NAME}] digest spawn failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    } finally {
+      // The child inherited its own copy of the descriptor across spawn; the
+      // parent copy is closed here to avoid leaking one fd per digest run.
+      closeSync(fd);
+    }
+  };
+
+  const digestSession = async (sessionID: string) => {
+    try {
+      const directory = sessionDirs.get(sessionID) ?? "";
+      const project = await projectFor(directory);
+      const res = await client.session.messages({ path: { id: sessionID } });
+      const messages = Array.isArray(res) ? res : (res?.data ?? []);
+      const transcript = transcriptOf(messages);
+      // Spawn gate (D3): skip sessions with no tracked activity or trivial
+      // transcripts before they reach the digest script.
+      const state = states.get(sessionID);
+      if (state && !state.hasActivity) {
+        log(`digest skipped for ${sessionID}: no activity`);
+        return;
+      }
+      const trimmed = transcript.trim();
+      if (!trimmed) {
+        log(`digest skipped for ${sessionID}: transcript empty`);
+        return;
+      }
+      if (trimmed.length < MIN_DIGEST_TRANSCRIPT_CHARS) {
+        log(`digest skipped for ${sessionID}: transcript too short`);
+        return;
+      }
+      const tmpPath = join(tmpdir(), `opencode-digest-${sessionID}.txt`);
+      await writeFile(tmpPath, transcript, "utf-8");
+      log(`digest spawned for ${sessionID} (project ${project})`);
+      spawnDigest(tmpPath, project);
+    } catch (err) {
+      console.warn(
+        `[${PLUGIN_NAME}] digest failed for ${sessionID}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   };
 
   const digestSessions = async () => {
-    for (const [sessionID, directory] of sessionDirs) {
-      try {
-        const project = await projectFor(directory);
-        const res = await client.session.messages({ path: { id: sessionID } });
-        const messages = Array.isArray(res) ? res : (res?.data ?? []);
-        const transcript = transcriptOf(messages);
-        if (!transcript.trim()) continue;
-        const tmpPath = join(tmpdir(), `opencode-digest-${sessionID}.txt`);
-        await writeFile(tmpPath, transcript, "utf-8");
-        spawnDigest(tmpPath, project);
-      } catch (err) {
-        console.warn(
-          `[${PLUGIN_NAME}] digest failed for ${sessionID}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
+    log(`digest batch: ${sessionDirs.size} sessions`);
+    for (const [sessionID] of sessionDirs) {
+      await digestSession(sessionID);
     }
   };
 
@@ -252,11 +303,7 @@ export default async function registerPlugin(input: {
           if (!state) break;
           const text = idleCheckpoint(state, summary(sessionID));
           if (text) {
-            try {
-              await client.tui.appendPrompt({ body: { text } });
-            } catch {
-              // headless: no TUI prompt to append to; the reminder is best-effort
-            }
+            await digestSession(sessionID);
           }
           break;
         }

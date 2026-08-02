@@ -236,6 +236,160 @@ class TestHookTolerance:
         assert call_compacting_or_skip() is None
 
 
+# ── Idle auto-capture (mirrors register.ts session.idle handler) ─────────
+
+
+class IdleCaptureSession:
+    """Mirror of the register.ts `session.idle` handler contract: automatic
+    capture runs only when the `idleCheckpoint` gate returns text (activity
+    tracked and not yet delivered) and the composer is never touched."""
+
+    def __init__(self) -> None:
+        self.has_activity = False
+        self.delivered = False
+        self.capture_spawns = 0
+        self.append_prompt_calls = 0
+
+    def on_idle(self) -> None:
+        """session.idle: run capture only when the gate says so."""
+        if not self.has_activity:
+            return
+        if self.delivered:
+            return
+        self.delivered = True
+        self.capture_spawns += 1
+
+    def digest(self) -> None:
+        """dispose(): digestSessions() digests every session (no gate)."""
+        self.capture_spawns += 1
+
+
+class TestIdleAutoCapture:
+    def test_idle_with_activity_spawns_capture(self):
+        session = IdleCaptureSession()
+        session.has_activity = True
+        session.on_idle()
+        assert session.capture_spawns == 1
+
+    def test_idle_never_calls_append_prompt(self):
+        session = IdleCaptureSession()
+        session.has_activity = True
+        session.on_idle()
+        assert session.append_prompt_calls == 0
+
+    def test_idle_without_activity_is_silent(self):
+        session = IdleCaptureSession()
+        session.on_idle()
+        assert session.capture_spawns == 0
+        assert session.delivered is False
+
+    def test_duplicate_idle_capture_spawned_once(self):
+        session = IdleCaptureSession()
+        session.has_activity = True
+        session.on_idle()
+        session.on_idle()
+        assert session.capture_spawns == 1
+
+    def test_dispose_digests_all_sessions_after_idle(self):
+        # Design D4: a second digest at dispose() is acceptable (idempotent).
+        session = IdleCaptureSession()
+        session.has_activity = True
+        session.on_idle()
+        session.digest()
+        assert session.capture_spawns == 2
+
+
+class TestRegisterIdleContract:
+    """Source-level contract checks for register.ts (the runtime entry)."""
+
+    REGISTER = REPO_ROOT / ".opencode" / "plugins" / "memory" / "register.ts"
+
+    def test_register_ts_exists(self):
+        assert self.REGISTER.is_file(), f"missing plugin file: {self.REGISTER}"
+
+    def test_idle_handler_does_not_inject_into_composer(self):
+        text = self.REGISTER.read_text(encoding="utf-8")
+        assert "appendPrompt" not in text, (
+            "session.idle must not inject into the composer"
+        )
+
+    def test_idle_handler_runs_automatic_capture(self):
+        text = self.REGISTER.read_text(encoding="utf-8")
+        assert "digestSession(sessionID)" in text
+
+    def test_digest_output_captured_to_log(self):
+        text = self.REGISTER.read_text(encoding="utf-8")
+        assert "digest-spawn.log" in text
+
+    def test_dispose_still_digests_all_sessions(self):
+        text = self.REGISTER.read_text(encoding="utf-8")
+        assert "digestSessions()" in text
+
+
+# ── Digest spawn gate + batch observability (mirrors register.ts D3/D5) ──
+
+
+MIN_DIGEST_TRANSCRIPT_CHARS = 200
+
+
+def should_spawn_digest(has_activity: bool, transcript: str) -> tuple[bool, str | None]:
+    """Mirror of the register.ts `digestSession` spawn gate (D3).
+
+    Returns `(spawn, skip_reason)`: a digest spawns only when the session
+    tracked activity and the transcript is non-empty and at least
+    MIN_DIGEST_TRANSCRIPT_CHARS characters long.
+    """
+    if not has_activity:
+        return False, "no activity"
+    if not transcript.strip():
+        return False, "transcript empty"
+    if len(transcript.strip()) < MIN_DIGEST_TRANSCRIPT_CHARS:
+        return False, "transcript too short"
+    return True, None
+
+
+class TestDigestSpawnGate:
+    def test_no_activity_is_skipped(self):
+        assert should_spawn_digest(False, "x" * 300) == (False, "no activity")
+
+    def test_empty_transcript_is_skipped(self):
+        assert should_spawn_digest(True, " \n ") == (False, "transcript empty")
+
+    def test_short_transcript_is_skipped(self):
+        assert should_spawn_digest(True, "x" * 199) == (False, "transcript too short")
+
+    def test_exactly_200_chars_spawns(self):
+        assert should_spawn_digest(True, "x" * 200) == (True, None)
+
+    def test_activity_with_long_transcript_spawns(self):
+        assert should_spawn_digest(True, "x" * 300) == (True, None)
+
+
+class TestRegisterDigestGateContract:
+    """Source-level contract checks for register.ts (the runtime entry)."""
+
+    REGISTER = REPO_ROOT / ".opencode" / "plugins" / "memory" / "register.ts"
+
+    def test_spawn_gate_skips_no_activity(self):
+        text = self.REGISTER.read_text(encoding="utf-8")
+        assert "digest skipped for" in text
+        assert "no activity" in text
+
+    def test_spawn_gate_skips_short_transcripts(self):
+        text = self.REGISTER.read_text(encoding="utf-8")
+        assert "transcript empty" in text
+        assert "transcript too short" in text
+        assert "MIN_DIGEST_TRANSCRIPT_CHARS" in text
+
+    def test_batch_summary_logged_before_spawns(self):
+        text = self.REGISTER.read_text(encoding="utf-8")
+        assert "digest batch: ${sessionDirs.size} sessions" in text
+
+    def test_per_session_spawn_is_logged(self):
+        text = self.REGISTER.read_text(encoding="utf-8")
+        assert "digest spawned for" in text
+
+
 # ── Plugin file exists and is syntactically valid TypeScript ─────────────
 
 
