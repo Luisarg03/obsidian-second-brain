@@ -38,6 +38,15 @@ VERSION_FIELDS = (
 )
 
 
+def sync_uv_lock() -> None:
+    """Regenerate uv.lock so the editable install version matches pyproject.toml."""
+    result = subprocess.run(
+        ["uv", "lock"], cwd=REPO_ROOT, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"uv lock failed: {result.stderr.strip()}")
+
+
 def parse_version(text: str) -> tuple[int, int, int]:
     """Parse a semver string into (major, minor, patch)."""
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", text.strip())
@@ -181,15 +190,17 @@ def main(argv: list[str] | None = None) -> int:
                     f"  {path.relative_to(REPO_ROOT)}: "
                     f"{current_text} -> {new_version}"
                 )
+            print("  uv.lock: would sync via `uv lock`")
             return 0
 
         for path, pattern in VERSION_FIELDS:
             update_version(path, pattern, new_version)
             if read_version(path, pattern) != new_version:
                 raise RuntimeError(f"Failed to update version in {path}")
+        sync_uv_lock()
         print(
             f"Version bumped to {new_version} in "
-            f"{len(VERSION_FIELDS)} file(s)."
+            f"{len(VERSION_FIELDS)} file(s); uv.lock synced."
         )
     except (ValueError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -3,7 +3,7 @@
  *
  * Implements openspec/specs/opencode-plugin/spec.md:
  *   - session.created: project name resolution only (no memory auto-injection)
- *   - session.idle: checkpoint reminder (skip if no activity or already delivered)
+ *   - session.idle: auto-capture gate (skip if no activity or already delivered)
  *   - tool.execute.after: detect `git commit*` and queue a checkpoint
  *   - tui.prompt.append: deliver queued checkpoint on next user message
  *   - experimental.session.compacting: pre-compaction capture (always fires)
